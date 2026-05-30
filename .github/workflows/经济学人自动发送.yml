@@ -1,0 +1,82 @@
+name: Economist Watcher
+
+on:
+  schedule:
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查并发送邮件附件
+        shell: python
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          import os, smtplib, json, urllib.request, traceback, socket
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+          from email.mime.application import MIMEApplication
+
+          socket.setdefaulttimeout(120)
+
+          try:
+              base_url = "https://api.github.com/repos/hehonghui/awesome-english-ebooks/contents/01_economist"
+              req = urllib.request.Request(base_url, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as response:
+                  folders = json.loads(response.read().decode())
+
+              latest = sorted([f['name'] for f in folders if f['name'].startswith('te_')])[-1]
+
+              folder_url = f"https://api.github.com/repos/hehonghui/awesome-english-ebooks/contents/01_economist/{latest}"
+              with urllib.request.urlopen(urllib.request.Request(folder_url, headers={'User-Agent': 'Mozilla/5.0'})) as resp:
+                  files = json.loads(resp.read().decode())
+
+              # 优先 PDF，没有就 EPUB
+              attach_file = None
+              for f in files:
+                  if f['name'].endswith('.pdf'):
+                      attach_file = f
+                      break
+              if not attach_file:
+                  for f in files:
+                      if f['name'].endswith('.epub'):
+                          attach_file = f
+                          break
+              if not attach_file:
+                  for f in files:
+                      if f['name'].endswith('.mobi'):
+                          attach_file = f
+                          break
+              if not attach_file:
+                  raise Exception("该期没有可下载的文件")
+
+              file_url = attach_file['download_url']
+              file_name = attach_file['name']
+              ext = file_name.split('.')[-1]
+
+              print(f"正在下载: {file_url}")
+              file_data = urllib.request.urlopen(file_url).read()
+
+              msg = MIMEMultipart()
+              msg['Subject'] = f"📚 经济学人新刊: {latest} ({ext}格式)"
+              msg['From'] = os.environ['EMAIL_USER']
+              msg['To'] = os.environ['EMAIL_TO']
+              msg.attach(MIMEText(f"已获取最新一期《经济学人》({latest})，格式为{ext}，请查收附件。"))
+
+              part = MIMEApplication(file_data, Name=file_name)
+              part['Content-Disposition'] = f'attachment; filename="{file_name}"'
+              msg.attach(part)
+
+              s = smtplib.SMTP_SSL('smtp.qq.com', 465)
+              s.login(os.environ['EMAIL_USER'], os.environ['EMAIL_PASS'])
+              s.sendmail(os.environ['EMAIL_USER'], os.environ['EMAIL_TO'], msg.as_string())
+              s.quit()
+              print("邮件发送成功！")
+          except Exception as e:
+              print(f"执行出错: {e}")
+              traceback.print_exc()
+              exit(1)          
